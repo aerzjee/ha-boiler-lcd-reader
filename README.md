@@ -53,7 +53,7 @@ Odczyty publikowane są jako natywne encje sensorów w Home Assistant w pełnych
    * Włącz przełącznik *Automatycznie zbieraj próbki w tle (Collector Mode)* lub wykonaj kilka ręcznych zrzutów przyciskiem *📸 Złap próbkę teraz*.
    * Kliknij **📦 Pobierz paczkę próbek (.zip)**.
 4. **Wytrenowanie modelu na PC:**
-   * Skorzystaj z dołączonego w katalogu `training/` potoku trenowania YOLO11 na komputerze z kartą graficzną (zobacz szczegółowy przewodnik: [training/README_TRAINING.md](training/README_TRAINING.md)).
+   * Skorzystaj z dołączonego w katalogu `training/` potoku trenowania YOLO11 na komputerze PC z kartą graficzną NVIDIA (CUDA) lub procesorem Intel Core Ultra (Intel Arc 140T XPU + Intel AI Boost NPU) – zobacz szczegółowy przewodnik: [training/README_TRAINING.md](training/README_TRAINING.md).
 5. **Wgranie modelu:**
    * W sekcji *Model TensorFlow Lite* wskaż wygenerowany plik `active_model.tflite` i kliknij **⬆️ Wgraj model .tflite**.
 6. **Weryfikacja:**
@@ -103,7 +103,7 @@ GitHub Actions zweryfikuje zgodność tagu z `config.yaml`, zbuduje kontener za 
 - **HA Ingress UI:** Canvas-based interactive Region-of-Interest (ROI) bounding box drawer with live camera preview.
 - **Physical Sanity Validation:** Enforces temperature plausibility bounds (`min_temp`–`max_temp`) and rejects abrupt temperature jumps (`max_delta`) unless confirmed across 3 consecutive frames, protecting long-term sensor statistics.
 - **Collector Mode:** Built-in frame harvester with change detection (`cv2.absdiff`) and ZIP export for model fine-tuning.
-- **Model Pipeline:** Full YOLO11 training and TFLite export scripts provided in `training/` directory.
+- **Model Pipeline:** Full YOLO11 training and TFLite export scripts provided in `training/` directory with multi-hardware acceleration (NVIDIA RTX CUDA, Intel Core Ultra Arc 140T XPU & Intel AI Boost NPU via OpenVINO).
 
 ---
 

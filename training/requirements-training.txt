@@ -1,15 +1,28 @@
 # ==============================================================================
-# Boiler LCD Reader – Local YOLO11 Training & TFLite Export Dependencies
-# Target GPU: NVIDIA GeForce RTX 5080 (Blackwell architecture, 16GB VRAM)
-# Target CPU: AMD Ryzen 9 9950X3D (16 Cores / 32 Threads)
+# Boiler LCD Reader – Local YOLO11 Training & Export Dependencies
+# Supported Hardware Platforms:
+#   - NVIDIA GeForce RTX 5080 (Blackwell architecture, CUDA) + AMD Ryzen 9 9950X3D
+#   - Intel Core Ultra (Intel Arc 140T GPU / XPU + Intel AI Boost NPU)
+#   - Standard x86_64 CPU (Fallback)
 # ==============================================================================
 #
-# IMPORTANT: Install PyTorch with CUDA support first before installing this file!
-# For RTX 5080 (CUDA 12.4+ / 12.6+ / 12.8+):
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-#   (or use cu126 / cu128 depending on the latest PyTorch Blackwell wheel support)
+# IMPORTANT: Install PyTorch first according to your hardware platform!
 #
-# Then install training dependencies:
+# --- WARIANT A: NVIDIA GPU (GeForce RTX 5080 / CUDA 12.4+) ---
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   (lub cu126 / cu128 w zależności od wersji PyTorch dla architektury Blackwell)
+#
+# --- WARIANT B: Intel Core Ultra (Intel Arc 140T XPU + Intel AI Boost NPU) ---
+#   1. Zainstaluj sterowniki w systemie Windows / Linux:
+#      - Intel Arc & Iris Xe Graphics Driver (najnowszy sterownik GPU ze strony Intel)
+#      - Intel NPU Driver (Intel AI Boost Driver ze strony Intel / Windows Update)
+#   2. Zainstaluj PyTorch z natywną obsługą Intel XPU:
+#      pip install torch torchvision --index-url https://download.pytorch.org/whl/xpu
+#
+# --- WARIANT C: Tylko CPU (bez akceleracji GPU) ---
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#
+# Następnie zainstaluj zależności treningowe i eksportowe:
 #   pip install -r requirements-training.txt
 # ==============================================================================
 
@@ -18,6 +31,7 @@ tensorflow>=2.16.0
 ai-edge-litert
 onnx>=1.16.0
 onnx2tf>=1.22.0
+openvino>=2024.4.0
 opencv-python
 numpy
 pyyaml

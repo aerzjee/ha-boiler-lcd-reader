@@ -1,16 +1,19 @@
-# Przewodnik Trenowania Modelu YOLO11 na PC (RTX 5080 + Ryzen 9950X3D)
+# Przewodnik Trenowania Modelu YOLO11 na PC (NVIDIA RTX 5080 / Intel Core Ultra Arc 140T + NPU)
 
 Ten przewodnik przeprowadzi Cię krok po kroku przez cały proces przygotowania zbioru danych, oznaczania etykiet, trenowania modelu detekcji cyfr **YOLO11** oraz automatycznego eksportu do formatu **TensorFlow Lite (`.tflite`)** zoptymalizowanego pod kątem dodatku Home Assistant.
 
 ---
 
-## 🖥️ Wymagania Sprzętowe i Środowiskowe
+## 🖥️ Obsługiwane Platformy Sprzętowe
 
-Potok treningowy został zoptymalizowany pod kątem nowoczesnej stacji roboczej PC:
-- **GPU:** NVIDIA GeForce RTX 5080 (architektura Blackwell, 16 GB VRAM)
-- **CPU:** AMD Ryzen 9 9950X3D (16 rdzeni / 32 wątki)
-- **System:** Windows 10/11 lub Linux (Ubuntu 22.04+)
-- **Python:** 3.10 – 3.12 (zalecany Python 3.11 z PyTorch 2.5+ i CUDA 12.4+)
+Potok treningowy posiada natywną auto-detekcję i optymalizację pod kątem nowoczesnych stacji roboczych PC oraz laptopów:
+1. **Platforma NVIDIA (Maksymalna moc obliczeniowa):**
+   - **GPU:** NVIDIA GeForce RTX 5080 (architektura Blackwell, 16 GB GDDR7 VRAM, CUDA 12.4+)
+   - **CPU:** AMD Ryzen 9 9950X3D (16 rdzeni / 32 wątki)
+2. **Platforma Intel Core Ultra (Nowoczesna architektura hybrydowa):**
+   - **GPU (XPU):** Intel Arc 140T (architektura Xe2, współdzielona pamięć RAM, PyTorch XPU)
+   - **NPU:** Intel AI Boost (dedykowany akcelerator neuronowy z obsługą OpenVINO)
+3. **Standardowe CPU x86-64:** Uniwersalny fallback w razie braku akceleracji sprzętowej.
 
 ---
 
@@ -67,7 +70,7 @@ Otwórz terminal (PowerShell lub bash) w katalogu `training/`:
 
 ```bash
 # 1. Przejdź do katalogu training
-cd c:\Users\Kamil\Documents\git-repos\ha-boiler-lcd-reader\training
+cd training
 
 # 2. Utwórz dedykowane środowisko wirtualne
 python -m venv .venv
@@ -77,11 +80,24 @@ python -m venv .venv
 .venv\Scripts\activate
 # Na Linux:
 source .venv/bin/activate
+```
 
-# 4. Zainstaluj PyTorch z obsługą CUDA dla architektury Blackwell RTX 5080:
+#### Wariant A: Stacja z kartą NVIDIA GeForce RTX 5080 (CUDA)
+```bash
+# Instalacja PyTorch z obsługą CUDA 12.4+:
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
-# 5. Zainstaluj pozostałe pakiety treningowe i eksportowe:
+# Instalacja pozostałych zależności:
+pip install -r requirements-training.txt
+```
+
+#### Wariant B: Urządzenie z procesorem Intel Core Ultra (Intel Arc 140T + Intel AI Boost NPU)
+Upewnij się, że w systemie zainstalowane są sterowniki **Intel Arc Graphics Driver** oraz **Intel NPU Driver (Intel AI Boost)** ze strony Intel lub z Windows Update.
+```bash
+# Instalacja PyTorch z natywną obsługą Intel XPU:
+pip install torch torchvision --index-url https://download.pytorch.org/whl/xpu
+
+# Instalacja pozostałych zależności (w tym OpenVINO):
 pip install -r requirements-training.txt
 ```
 
@@ -121,6 +137,14 @@ Oraz wypisze w konsoli statystyki wystąpień poszczególnych cyfr.
 Uruchom główny skrypt treningowy:
 
 ```bash
+# Domyślne automatyczne wykrycie akceleratora i optymalnych parametrów:
+python train_and_export.py
+```
+
+Możesz także podać parametry jawnie:
+
+```bash
+# NVIDIA GeForce RTX 5080:
 python train_and_export.py \
   --model yolo11n.pt \
   --data dataset.yaml \
@@ -132,10 +156,10 @@ python train_and_export.py \
   --device 0
 ```
 
-#### Dlaczego te parametry są optymalne?
-- **`--batch 64`:** Maksymalizuje wykorzystanie 16 GB szybkiej pamięci VRAM karty RTX 5080, zapewniając stabilną zbieżność gradientu.
-- **`--workers 12`:** Wykorzystuje wielowątkowość procesora Ryzen 9 9950X3D do błyskawicznego ładowania i augmentacji klatek w pamięci RAM.
-- **`--imgsz 320`:** Rozdzielczość 320x320 px jest optymalna dla małych wycinków ROI ekranu LCD i zapewnia minimalny narzut na CPU w Home Assistant (kilkanaście ms na odczyt).
+#### Automatyczne dopasowanie parametrów do sprzętu:
+- **NVIDIA CUDA (RTX 5080):** `batch = 64`, `workers = 12`, `amp = True` – maksymalizuje nasycenie 16 GB pamięci VRAM oraz 32 wątków procesora Ryzen 9 9950X3D.
+- **Intel Arc (Arc 140T XPU):** `batch = 32`, `workers = 8`, `amp = True` – optymalny rozmiar partii dla zintegrowanej pamięci graficznej i rdzeni Xe.
+- **CPU:** `batch = 16`, `workers = 4`, `amp = False` – bezpieczne przetwarzanie sekwencyjne.
 - **Specjalne augmentacje LCD w kodzie skryptu:**
   - `fliplr=0.0` oraz `flipud=0.0` – **bezwzględnie wyłączone lustrzane odbicia**, ponieważ odwrócone cyfry (np. 2, 5, 3) zniszczyłyby model.
   - `hsv_s=0.4`, `hsv_v=0.4` – symulacja wahań jasności i kontrastu niebieskiego podświetlenia LCD w dzień i w nocy.
@@ -148,6 +172,36 @@ Po zakończeniu treningu skrypt automatycznie:
    - Zweryfikuje obecność identyfikatora `TFL3` w nagłówku FlatBuffer,
    - Załaduje model do interpretera TFLite i wykona próbną inferencję,
    - Upewni się, że wyjściowy tensor ma dokładnie 14 kanałów (4 bbox + 10 klas cyfr).
+
+---
+
+## ⚡ Trening i akceleracja na Intel Core Ultra (Intel Arc 140T + Intel AI Boost NPU)
+
+Procesory **Intel Core Ultra** posiadają zintegrowany układ graficzny **Intel Arc 140T** oraz akcelerator neuronowy **Intel AI Boost (NPU)**. Skrypt treningowy w pełni wspiera tę architekturę:
+
+1. **Automatyczne wykrycie sprzętu (Auto-Detection):**
+   ```bash
+   python train_and_export.py
+   ```
+   Skrypt sam rozpozna obecność `torch.xpu` oraz jednostki NPU w OpenVINO.
+
+2. **Wymuszenie treningu na układzie Intel Arc 140T (XPU):**
+   ```bash
+   python train_and_export.py --device xpu --batch 32
+   ```
+
+3. **Trening z weryfikacją i benchmarkiem na akceleratorze Intel AI Boost (NPU):**
+   ```bash
+   python train_and_export.py --device npu
+   ```
+   *lub z poziomu karty Arc:*
+   ```bash
+   python train_and_export.py --device xpu --npu-benchmark
+   ```
+   Skrypt przeprowadzi proces uczenia na rdzeniach Xe karty graficznej Intel Arc (`xpu`), wyeksportuje standardowy model `.tflite` dla Home Assistanta, a następnie wyeksportuje model do formatu **OpenVINO FP16** i zmierzy średni czas inferencji (ms/klatka) oraz FPS na:
+   - **Intel AI Boost (NPU)**
+   - **Intel Arc Graphics (GPU)**
+   - **Host CPU**
 
 ---
 
