@@ -115,13 +115,158 @@ def collect_samples(source_dir: Path) -> tuple[list[tuple[Path, Path]], list[Pat
     return labeled_pairs, unlabeled_images
 
 
+def resolve_unique_dest_pair(
+    dest_img_dir: Path,
+    dest_lbl_dir: Path,
+    img_name: str,
+    lbl_name: str,
+) -> tuple[Path, Path]:
+    """Resolve destination paths for an image and label pair avoiding filename collisions.
+
+    If target files already exist in destination directories, appends an incremental
+    suffix to both filenames so that the image and its corresponding label maintain
+    an identical stem required by YOLO dataset loaders.
+    """
+    dest_img = dest_img_dir / img_name
+    dest_lbl = dest_lbl_dir / lbl_name
+    if not dest_img.exists() and not dest_lbl.exists():
+        return dest_img, dest_lbl
+
+    stem = Path(img_name).stem
+    img_ext = Path(img_name).suffix
+    lbl_ext = Path(lbl_name).suffix
+
+    counter = 1
+    while True:
+        candidate_img = dest_img_dir / f"{stem}_append{counter}{img_ext}"
+        candidate_lbl = dest_lbl_dir / f"{stem}_append{counter}{lbl_ext}"
+        if not candidate_img.exists() and not candidate_lbl.exists():
+            return candidate_img, candidate_lbl
+        counter += 1
+
+
+def count_class_distribution(labels_dir: Path) -> dict[int, int]:
+    """Analyze and display the class distribution (0-9) across YOLO label files.
+
+    Searches recursively for all .txt label files in labels_dir (e.g. train and val),
+    counts occurrences of each digit class (0 through 9), and prints a formatted
+    table with an ASCII progress bar and status indicator for rare classes (< 5%).
+
+    Args:
+        labels_dir: Path to directory containing YOLO .txt label files.
+
+    Returns:
+        Dictionary mapping class_id (0-9) to count of detected annotations.
+    """
+    class_counts: dict[int, int] = {i: 0 for i in range(NUM_CLASSES)}
+    label_files = [p for p in labels_dir.rglob("*.txt") if p.is_file()] if labels_dir.exists() else []
+
+    if not label_files:
+        logger.warning("No label files (.txt) found in: %s", labels_dir)
+        return class_counts
+
+    for lbl_path in label_files:
+        try:
+            lines = lbl_path.read_text(encoding="utf-8").splitlines()
+        except Exception as exc:
+            logger.warning("Could not read %s: %s", lbl_path, exc)
+            continue
+
+        for line in lines:
+            line_str = line.strip()
+            if not line_str or line_str.startswith("#"):
+                continue
+            parts = line_str.split()
+            if not parts:
+                continue
+            try:
+                cid = int(parts[0])
+                if 0 <= cid < NUM_CLASSES:
+                    class_counts[cid] += 1
+            except ValueError:
+                continue
+
+    total_instances = sum(class_counts.values())
+
+    table_lines: list[str] = [
+        "",
+        "=" * 82,
+        "ROZKŁAD LICZEBNOŚCI KLAS CYFR (0-9) W ZBIORZE DANYCH",
+        "=" * 82,
+        f"{'Cyfra':^7}|{'Liczba':^10}|{'Udział':^9}|{'Wykres słupkowy ASCII':^24}|{'Status':^28}",
+        f"{'-' * 7}+{'-' * 10}+{'-' * 9}+{'-' * 24}+{'-' * 28}",
+    ]
+
+    rare_classes: list[int] = []
+    missing_classes: list[int] = []
+
+    for digit in range(NUM_CLASSES):
+        count = class_counts[digit]
+        pct = (count / total_instances * 100.0) if total_instances > 0 else 0.0
+
+        bar_len = 20
+        filled = int(round((pct / 100.0) * bar_len)) if total_instances > 0 else 0
+        filled = min(bar_len, max(0, filled))
+        bar = f"[{'█' * filled}{'░' * (bar_len - filled)}]"
+
+        if count == 0:
+            status = "❌ BRAK PRÓBEK (0%)"
+            missing_classes.append(digit)
+        elif pct < 5.0:
+            status = "⚠️  RZADKA KLASA (< 5%)"
+            rare_classes.append(digit)
+        else:
+            status = "✓ OK"
+
+        table_lines.append(f"{digit:^7}|{count:^10}|{f'{pct:.1f}%':^9}| {bar} | {status:<26}")
+
+    table_lines.extend(
+        [
+            "-" * 82,
+            f"Łączna liczba adnotacji: {total_instances} (w {len(label_files)} plikach etykiet)",
+            f"Katalog etykiet:         {labels_dir.resolve()}",
+        ]
+    )
+
+    if missing_classes:
+        table_lines.append(f"❌ Brakujące cyfry w zbiorze:       {', '.join(str(c) for c in missing_classes)}")
+    if rare_classes:
+        table_lines.append(f"⚠️  Rzadkie cyfry w zbiorze (< 5%):  {', '.join(str(c) for c in rare_classes)}")
+
+    if missing_classes or rare_classes:
+        table_lines.extend(
+            [
+                "",
+                "💡 WSKAZÓWKA (Fine-Tuning):",
+                "   Przed dotrenowaniem modelu zaleca się zebrać i zaetykietować więcej próbek",
+                "   z rzadkimi cyframi, a następnie dodać je do zbioru za pomocą:",
+                "   python prepare_dataset.py --input <nowa_paczka> --append",
+            ]
+        )
+    else:
+        table_lines.append("✓ Zbiór danych wykazuje zrównoważony rozkład wszystkich klas cyfr (0-9).")
+
+    table_lines.append("=" * 82)
+    logger.info("%s", "\n".join(table_lines))
+    return class_counts
+
+
 def prepare_dataset(
     input_path: Path,
     output_dir: Path,
     train_ratio: float = 0.85,
     seed: int = 42,
+    append: bool = False,
 ) -> None:
-    """Extract, validate, split, and organize dataset into YOLO structure."""
+    """Extract, validate, split, and organize dataset into YOLO structure.
+
+    Args:
+        input_path: Source ZIP archive or directory containing images and annotations.
+        output_dir: Destination root directory for YOLO dataset (e.g. training/datasets/boiler_digits).
+        train_ratio: Proportion of samples allocated to training set (default: 0.85).
+        seed: Random seed for deterministic train/val splitting.
+        append: If True, appends new samples to existing dataset without deleting existing files.
+    """
     if not input_path.exists():
         raise FileNotFoundError(f"Input path does not exist: {input_path}")
 
@@ -154,6 +299,10 @@ def prepare_dataset(
         unlabeled_dir = output_dir / "unlabeled_to_annotate"
 
         for d in [images_train_dir, images_val_dir, labels_train_dir, labels_val_dir]:
+            if not append and d.exists():
+                for existing_file in d.iterdir():
+                    if existing_file.is_file():
+                        existing_file.unlink()
             d.mkdir(parents=True, exist_ok=True)
 
         # Validate all label files first
@@ -195,45 +344,67 @@ def prepare_dataset(
         val_pairs = validated_pairs[train_count:]
 
         logger.info(
-            "Splitting dataset: %d train (%.1f%%) / %d val (%.1f%%)",
+            "Splitting incoming dataset: %d train (%.1f%%) / %d val (%.1f%%) [append=%s]",
             len(train_pairs),
             train_ratio * 100,
             len(val_pairs),
             (1 - train_ratio) * 100,
+            append,
         )
 
         # Copy train pairs
+        copied_train = 0
         for img_path, label_path in train_pairs:
-            dest_img = images_train_dir / img_path.name
-            dest_lbl = labels_train_dir / label_path.name
+            if append:
+                dest_img, dest_lbl = resolve_unique_dest_pair(
+                    images_train_dir, labels_train_dir, img_path.name, label_path.name
+                )
+            else:
+                dest_img = images_train_dir / img_path.name
+                dest_lbl = labels_train_dir / label_path.name
             shutil.copy2(img_path, dest_img)
             shutil.copy2(label_path, dest_lbl)
+            copied_train += 1
 
         # Copy val pairs
+        copied_val = 0
         for img_path, label_path in val_pairs:
-            dest_img = images_val_dir / img_path.name
-            dest_lbl = labels_val_dir / label_path.name
+            if append:
+                dest_img, dest_lbl = resolve_unique_dest_pair(
+                    images_val_dir, labels_val_dir, img_path.name, label_path.name
+                )
+            else:
+                dest_img = images_val_dir / img_path.name
+                dest_lbl = labels_val_dir / label_path.name
             shutil.copy2(img_path, dest_img)
             shutil.copy2(label_path, dest_lbl)
+            copied_val += 1
 
         # Copy unlabeled images if any
         if unlabeled_images:
             unlabeled_dir.mkdir(parents=True, exist_ok=True)
             for img_path in unlabeled_images:
-                shutil.copy2(img_path, unlabeled_dir / img_path.name)
+                dest_unlabeled = unlabeled_dir / img_path.name
+                if append and dest_unlabeled.exists():
+                    stem = img_path.stem
+                    ext = img_path.suffix
+                    c = 1
+                    while (unlabeled_dir / f"{stem}_append{c}{ext}").exists():
+                        c += 1
+                    dest_unlabeled = unlabeled_dir / f"{stem}_append{c}{ext}"
+                shutil.copy2(img_path, dest_unlabeled)
             logger.info("Copied %d unlabeled image(s) to %s", len(unlabeled_images), unlabeled_dir)
 
         # Print summary
         logger.info("=" * 60)
-        logger.info("Dataset Preparation Complete!")
+        logger.info("Dataset Preparation Complete! (Mode: %s)", "APPEND" if append else "FRESH")
         logger.info("Output directory: %s", output_dir.resolve())
-        logger.info("  - Train images: %d in %s", len(train_pairs), images_train_dir)
-        logger.info("  - Val images:   %d in %s", len(val_pairs), images_val_dir)
-        logger.info("Digit class distribution across annotations:")
-        for digit in range(NUM_CLASSES):
-            count = class_counter.get(digit, 0)
-            logger.info("  Class '%d': %d instances", digit, count)
+        logger.info("  - Newly added to Train: %d", copied_train)
+        logger.info("  - Newly added to Val:   %d", copied_val)
         logger.info("=" * 60)
+
+        # Analyze total class distribution in target dataset
+        count_class_distribution(output_dir / "labels")
 
     finally:
         if temp_extract_dir and temp_extract_dir.exists():
@@ -242,12 +413,14 @@ def prepare_dataset(
 
 def main() -> None:
     """CLI entry point for prepare_dataset."""
-    parser = argparse.ArgumentParser(description="Prepare and split boiler LCD digit samples for YOLO11 training.")
+    parser = argparse.ArgumentParser(
+        description="Prepare, append, and analyze boiler LCD digit samples for YOLO11 training."
+    )
     parser.add_argument(
         "-i",
         "--input",
         type=Path,
-        required=True,
+        default=None,
         help="Path to exported ZIP archive (boiler_training_samples_*.zip) or directory with images and labels.",
     )
     parser.add_argument(
@@ -269,13 +442,36 @@ def main() -> None:
         default=42,
         help="Random seed for deterministic train/val splitting (default: 42).",
     )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        default=False,
+        help="Append new samples to existing dataset without wiping previous data (avoids collisions).",
+    )
+    parser.add_argument(
+        "--check-dist",
+        action="store_true",
+        default=False,
+        help="Analyze and display class distribution of the dataset in --output without importing new samples.",
+    )
 
     args = parser.parse_args()
+
+    if args.check_dist:
+        labels_dir = args.output / "labels"
+        logger.info("Analyzing class distribution in: %s", labels_dir)
+        count_class_distribution(labels_dir)
+        return
+
+    if args.input is None:
+        parser.error("The --input argument (-i) is required unless --check-dist is specified.")
+
     prepare_dataset(
         input_path=args.input,
         output_dir=args.output,
         train_ratio=args.train_ratio,
         seed=args.seed,
+        append=args.append,
     )
 
 

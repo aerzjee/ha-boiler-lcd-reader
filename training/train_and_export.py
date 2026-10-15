@@ -615,8 +615,54 @@ def verify_exported_tflite(model_path: Path, expected_classes: int = 10) -> bool
 
 
 # ---------------------------------------------------------------------------
-# Training & Export Routine
+# Checkpoint Discovery & Training Routine
 # ---------------------------------------------------------------------------
+
+
+def find_latest_checkpoint(search_roots: list[Path] | None = None) -> Path | None:
+    """Search for the most recently modified best.pt weights checkpoint.
+
+    Searches known training directories for YOLO run weights (best.pt),
+    returning the Path of the newest file by modification timestamp.
+
+    Args:
+        search_roots: Optional list of root directories to scan. Defaults to runs/detect
+                      relative to script and working directories.
+
+    Returns:
+        Path to latest best.pt (or fallback last.pt), or None if not found.
+    """
+    if search_roots is None:
+        script_dir = Path(__file__).parent
+        cwd = Path.cwd()
+        search_roots = [
+            script_dir / "runs" / "detect",
+            cwd / "runs" / "detect",
+            cwd / "training" / "runs" / "detect",
+            script_dir.parent / "training" / "runs" / "detect",
+        ]
+
+    candidates: list[Path] = []
+    for root in search_roots:
+        if root.exists():
+            candidates.extend(root.glob("**/weights/best.pt"))
+
+    if not candidates:
+        for root in search_roots:
+            if root.exists():
+                candidates.extend(root.glob("**/weights/last.pt"))
+
+    if not candidates:
+        return None
+
+    # Deduplicate resolved paths and sort by modification time descending
+    unique_candidates = {p.resolve(): p for p in candidates}
+    sorted_candidates = sorted(
+        unique_candidates.values(),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return sorted_candidates[0]
 
 
 def run_training_and_export(
@@ -632,6 +678,10 @@ def run_training_and_export(
     output_dist_dir: Path = Path("dist"),
     npu_benchmark: bool = False,
     export_openvino: bool = False,
+    lr0: float = 0.01,
+    lrf: float = 0.01,
+    fine_tune: bool = False,
+    warmup_epochs: float = 3.0,
 ) -> Path:
     """Train YOLO11 digit detector and export to active_model.tflite."""
     try:
@@ -674,6 +724,10 @@ def run_training_and_export(
     logger.info("Worker Threads:   %d", final_workers)
     logger.info("Training Device:  %s (%s)", train_device, device_desc)
     logger.info("Mixed Precision:  %s", amp)
+    if fine_tune:
+        logger.info("Training Mode:    FINE-TUNING (lr0=%.5f, lrf=%.4f, warmup=%.1f)", lr0, lrf, warmup_epochs)
+    else:
+        logger.info("Training Mode:    SCRATCH / PRETRAINED (lr0=%.5f, lrf=%.4f, warmup=%.1f)", lr0, lrf, warmup_epochs)
     logger.info("=" * 60)
 
     # Initialize Ultralytics model
@@ -693,6 +747,9 @@ def run_training_and_export(
         "device": train_device,
         "name": run_name,
         "amp": amp,
+        "lr0": lr0,
+        "lrf": lrf,
+        "warmup_epochs": warmup_epochs,
         # Augmentations
         "fliplr": 0.0,  # CRITICAL: No horizontal flipping of numbers
         "flipud": 0.0,  # CRITICAL: No vertical flipping of numbers
@@ -807,8 +864,8 @@ def main() -> None:
     parser.add_argument(
         "--model",
         type=str,
-        default="yolo11n.pt",
-        help="Base pretrained YOLO11 model weights (default: yolo11n.pt).",
+        default=None,
+        help="Base YOLO11 model weights (default: yolo11n.pt, or auto-discovered best.pt if --fine-tune).",
     )
     parser.add_argument(
         "--data",
@@ -819,8 +876,26 @@ def main() -> None:
     parser.add_argument(
         "--epochs",
         type=int,
-        default=150,
-        help="Total training epochs (default: 150).",
+        default=None,
+        help="Total training epochs (default: 150 for scratch training, 60 for fine-tuning).",
+    )
+    parser.add_argument(
+        "--lr0",
+        type=float,
+        default=None,
+        help="Initial learning rate (default: 0.01 for scratch training, 0.001 for fine-tuning).",
+    )
+    parser.add_argument(
+        "--lrf",
+        type=float,
+        default=0.01,
+        help="Final learning rate fraction as a factor of lr0 (default: 0.01).",
+    )
+    parser.add_argument(
+        "--fine-tune",
+        action="store_true",
+        default=False,
+        help="Enable fine-tuning mode on existing weights (e.g. best.pt) with lower lr0 and reduced warmup.",
     )
     parser.add_argument(
         "--patience",
@@ -882,19 +957,50 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Resolve fine-tuning parameters and checkpoints
+    if args.fine_tune:
+        if args.model:
+            model_target = args.model
+        else:
+            latest_ckpt = find_latest_checkpoint()
+            if latest_ckpt is not None:
+                model_target = str(latest_ckpt)
+                logger.info("Automatycznie wykryto najnowszy checkpoint do fine-tuningu: %s", latest_ckpt)
+            else:
+                logger.warning(
+                    "Nie odnaleziono pliku wag 'best.pt' w runs/detect/. "
+                    "Używam bazowego modelu yolo11n.pt jako punktu startowego."
+                )
+                model_target = "yolo11n.pt"
+
+        epochs = args.epochs if args.epochs is not None else 60
+        lr0 = args.lr0 if args.lr0 is not None else 0.001
+        warmup_epochs = 1.0
+        run_name = args.name if args.name != "boiler_yolo11n" else "boiler_yolo11n_finetune"
+    else:
+        model_target = args.model if args.model is not None else "yolo11n.pt"
+        epochs = args.epochs if args.epochs is not None else 150
+        lr0 = args.lr0 if args.lr0 is not None else 0.01
+        warmup_epochs = 3.0
+        run_name = args.name
+
     run_training_and_export(
-        model_name=args.model,
+        model_name=model_target,
         data_config=args.data,
-        epochs=args.epochs,
+        epochs=epochs,
         patience=args.patience,
         imgsz=args.imgsz,
         batch=args.batch,
         workers=args.workers,
         device=args.device,
-        run_name=args.name,
+        run_name=run_name,
         output_dist_dir=args.output_dir,
         npu_benchmark=args.npu_benchmark,
         export_openvino=args.export_openvino,
+        lr0=lr0,
+        lrf=args.lrf,
+        fine_tune=args.fine_tune,
+        warmup_epochs=warmup_epochs,
     )
 
 

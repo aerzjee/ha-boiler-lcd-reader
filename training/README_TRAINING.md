@@ -128,7 +128,12 @@ training/datasets/boiler_digits/
     └── val/    (odpowiadające etykiety .txt)
 ```
 
-Oraz wypisze w konsoli statystyki wystąpień poszczególnych cyfr.
+Oraz wypisze w konsoli szczegółową tabelę rozkładu klas cyfr (0–9) wraz z wykresem słupkowym ASCII i wskazaniem rzadkich cyfr (< 5% próbek).
+
+> [!TIP]
+> **Przydatne flagi skryptu `prepare_dataset.py`:**
+> - `python prepare_dataset.py --check-dist` – błyskawiczna analiza rozkładu klas w istniejącym zbiorze bez konieczności ponownego importu plików.
+> - `python prepare_dataset.py --input <paczka> --append` – dopisanie nowych próbek bez usuwania dotychczasowych danych i z automatyczną ochroną przed kolizjami nazw plików.
 
 ---
 
@@ -202,6 +207,90 @@ Procesory **Intel Core Ultra** posiadają zintegrowany układ graficzny **Intel 
    - **Intel AI Boost (NPU)**
    - **Intel Arc Graphics (GPU)**
    - **Host CPU**
+
+---
+
+## 🔄 Dotrenowanie istniejącego modelu (Fine-Tuning na rzadkich cyfrach)
+
+### Dlaczego rzadkie cyfry stanowią wyzwanie?
+W typowych warunkach domowych kocioł gazowy lub na pellet pracuje w powtarzalnych zakresach temperatur (np. CO: 45°C–65°C, CWU: 40°C–55°C). W efekcie w pierwszej zebranej paczce danych:
+- Cyfry **4, 5, 6** dominują (często stanowią ponad 80% wszystkich adnotacji),
+- Cyfry **7, 8, 9** (oraz rzadziej **0, 1, 2**) pojawiają się sporadycznie (< 5% próbek) lub wcale nie występują w zbiorze.
+
+Model wytrenowany na niezrównoważonym zbiorze może mieć trudności z poprawnym odczytem temperatur poza typowym zakresem (np. wygrzewanie antylegionella CWU na 70°C lub mroźne dni, gdy CO osiąga 75°C).
+
+### Zjawisko "Catastrophic Forgetting" (Gwałtowne Zapominanie)
+Gdy zbierzesz drugą paczkę zawierającą wyłącznie brakujące rzadkie cyfry, **nie wolno** trenować modelu od zera na samej nowej paczce ani uruchamiać pełnego treningu z domyślnym learning rate (`lr0=0.01`). Duże kroki gradientowe nadpisałyby wyuczone wcześniej filtry splotowe, powodując zjawisko **katastrofalnego zapominania** – model nauczyłby się rozpoznawać cyfrę `8`, lecz przestałby poprawnie klasyfikować cyfry `4`, `5` czy `6`.
+
+**Rozwiązanie wbudowane w potok Boiler LCD Reader:**
+1. **Tryb dopisywania (`--append`):** Nowe próbki są dołączane do dotychczasowej bazy danych bez jej kasowania, dzięki czemu sieć podczas nauki stale widzi wszystkie cyfry.
+2. **Tryb Fine-Tuning (`--fine-tune`):**
+   - Startuje z najlepszego punktu kontrolnego (`best.pt`) zamiast z wag ogólnych `yolo11n.pt`,
+   - Obniża współczynnik uczenia dziesięciokrotnie (`lr0=0.001`),
+   - Skraca fazę rozgrzewki (`warmup_epochs=1.0`),
+   - Ogranicza liczbę epok do 60 (z early stopping patience = 30).
+
+---
+
+### Instrukcja Fine-Tuningu krok po kroku
+
+#### Krok A: Sprawdzenie rozkładu klas w obecnym zbiorze danych
+W katalogu `training/` uruchom weryfikację rozkładu:
+```bash
+python prepare_dataset.py --check-dist
+```
+Skrypt wygeneruje w terminalu tabelę z wykresem słupkowym ASCII:
+```text
+ Cyfra |  Liczba  | Udział  | Wykres słupkowy ASCII  |           Status           
+-------+----------+---------+------------------------+----------------------------
+   0   |    4     |  1.5%   | [░░░░░░░░░░░░░░░░░░░░] | ⚠️  RZADKA KLASA (< 5%)   
+   ...
+   5   |   103    |  38.4%  | [████████░░░░░░░░░░░░] | ✓ OK                      
+   6   |   117    |  43.7%  | [█████████░░░░░░░░░░░] | ✓ OK                      
+   8   |    7     |  2.6%   | [█░░░░░░░░░░░░░░░░░░░] | ⚠️  RZADKA KLASA (< 5%)   
+   9   |    3     |  1.1%   | [░░░░░░░░░░░░░░░░░░░░] | ⚠️  RZADKA KLASA (< 5%)   
+----------------------------------------------------------------------------------
+⚠️  Rzadkie cyfry w zbiorze (< 5%):  0, 1, 2, 3, 7, 8, 9
+```
+
+#### Krok B: Zebranie i zaetykietowanie nowych próbek
+1. Gdy na piecu pojawią się nietypowe temperatury (np. podbicie temperatury zadanej CWU, restart pieca wyświetlający `0`, `1` lub `2`), pozwól Collectorowi w dodatku zapisać klatki.
+2. Pobierz paczkę próbek `.zip` z panelu dodatku.
+3. Oznacz cyfry w [MakeSense.ai](https://www.makesense.ai/) zgodnie z [Krokiem 2](#krok-2-oznaczanie-cyfr-labeling-w-darmowym-narz%C4%99dziu) (pamiętając o zachowaniu klas 0–9).
+4. Wyeksportuj etykiety w formacie YOLO `.txt`.
+
+#### Krok C: Dopisanie próbek do istniejącego zbioru danych
+Uruchom `prepare_dataset.py` z flagą `--append`:
+```bash
+python prepare_dataset.py --input "C:\sciezka\do\nowej_paczki_annotated.zip" --append
+```
+> [!NOTE]
+> Flaga `--append` nie usuwa starych plików. Nowe pary trafiają do `train` (85%) i `val` (15%), a ewentualne konflikty nazw plików są automatycznie rozwiązywane przez dodanie sufiksu `_append1`, `_append2` itp. Na koniec skrypt wyświetli nowy, zaktualizowany bilans klas.
+
+#### Krok D: Uruchomienie Fine-Tuningu
+Uruchom główny skrypt z flagą `--fine-tune`:
+
+```bash
+# NVIDIA GeForce RTX 5080 (CUDA):
+python train_and_export.py --fine-tune --device 0
+
+# Intel Core Ultra (Intel Arc 140T XPU):
+python train_and_export.py --fine-tune --device xpu
+
+# Tryb automatyczny (Auto-Detection):
+python train_and_export.py --fine-tune
+```
+
+**Co dzieje się pod maską podczas fine-tuningu:**
+1. Skrypt automatycznie odnajduje najnowszy plik wag `best.pt` z poprzednich sesji w folderze `runs/detect/`.
+2. Ustawia optymalne hiperparametry: `lr0=0.001`, `warmup_epochs=1.0`, `epochs=60`.
+3. Dotrenowuje sieć, zachowując wcześniej wyuczone wzorce i adaptując detektor do nowych cyfr.
+4. Eksportuje zaktualizowany model do `training/dist/active_model.tflite` i wykonuje testy poprawności.
+
+*(Opcjonalnie)* Jeśli chcesz jawnie wskazać konkretny plik punktu kontrolnego lub zmienić liczbę epok:
+```bash
+python train_and_export.py --fine-tune --model "runs/detect/boiler_yolo11n/weights/best.pt" --epochs 80 --lr0 0.0008
+```
 
 ---
 
