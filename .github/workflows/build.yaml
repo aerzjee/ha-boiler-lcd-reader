@@ -61,4 +61,4 @@ jobs:
           args: |
             --amd64 \
             --target . \
-            --docker-hub ${{ env.REGISTRY }}
+            --docker-hub ${{ env.REGISTRY }}/${{ github.repository_owner }}
