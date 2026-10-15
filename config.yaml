@@ -1,7 +1,7 @@
 name: "Boiler LCD Reader (TFLite)"
 slug: boiler_lcd_reader
 description: "Reads integer temperatures (CO and CWU) from a boiler LCD display using a TFLite object-detection model."
-url: https://github.com/GITHUB_OWNER/ha-boiler-lcd-reader
+url: https://github.com/aerzjee/ha-boiler-lcd-reader
 version: "0.1.0"
 arch:
   - amd64
@@ -14,7 +14,7 @@ panel_icon: "mdi:thermometer-lines"
 panel_title: "Boiler LCD"
 homeassistant_api: true
 apparmor: true
-image: "ghcr.io/GITHUB_OWNER/ha-boiler-lcd-reader-{arch}"
+image: "ghcr.io/aerzjee/ha-boiler-lcd-reader-{arch}"
 map:
   - data:rw
 options:
