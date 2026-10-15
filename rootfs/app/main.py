@@ -214,7 +214,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Boiler LCD Reader",
-    version="0.1.1",
+    version="0.1.2",
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
@@ -296,7 +296,7 @@ async def serve_index():
 @app.get("/api/health")
 async def health_check():
     """Return service health status."""
-    return {"status": "ok", "version": "0.1.1"}
+    return {"status": "ok", "version": "0.1.2"}
 
 
 @app.get("/api/status")
@@ -497,7 +497,7 @@ async def upload_model(
         raise HTTPException(status_code=500, detail=f"Failed to persist model: {exc}") from exc
 
     # Reload model in inference engine Singleton
-    reloaded = inference_engine.reload_model()
+    reloaded = await asyncio.to_thread(inference_engine.reload_model)
     logger.info(
         "Successfully uploaded new model to %s (%d bytes, reloaded=%s)",
         target_path,
@@ -551,14 +551,14 @@ async def download_snapshot(
         if not settings.roi_co:
             raise HTTPException(status_code=400, detail="Central Heating (CO) ROI is not configured.")
         try:
-            result_bytes = crop_roi(raw_bytes, settings.roi_co)
+            result_bytes = await asyncio.to_thread(crop_roi, raw_bytes, settings.roi_co)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to crop CO ROI: {exc}") from exc
     elif crop_mode == "cwu":
         if not settings.roi_cwu:
             raise HTTPException(status_code=400, detail="Domestic Hot Water (CWU) ROI is not configured.")
         try:
-            result_bytes = crop_roi(raw_bytes, settings.roi_cwu)
+            result_bytes = await asyncio.to_thread(crop_roi, raw_bytes, settings.roi_cwu)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to crop CWU ROI: {exc}") from exc
     else:
@@ -599,7 +599,7 @@ async def capture_now(
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     try:
-        updated_stats = await collector.capture_now(raw_bytes, settings)
+        updated_stats = await asyncio.to_thread(collector.capture_now, raw_bytes, settings)
         updated_stats["collector_enabled"] = settings.collector_enabled
         return updated_stats
     except RuntimeError as exc:

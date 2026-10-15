@@ -7,11 +7,11 @@ and ZIP export for model training.
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import logging
 import os
+import threading
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -106,7 +106,7 @@ class SampleCollector:
         raw_dir = data_dir or os.getenv("DATA_DIR", "/data")
         self.data_dir = Path(raw_dir)
         self.samples_dir = self.data_dir / "samples"
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
         # In-memory reference thumbnails for change detection
         self._last_co_thumb: np.ndarray | None = None
@@ -139,7 +139,7 @@ class SampleCollector:
             "limit_reached": limit_reached,
         }
 
-    async def process_and_save_background_sample(
+    def process_and_save_background_sample(
         self,
         image_bytes: bytes,
         settings: AppSettings,
@@ -211,9 +211,8 @@ class SampleCollector:
             return False
 
         # Save files
-        async with self._lock:
-            saved = await asyncio.to_thread(
-                self._write_samples_sync,
+        with self._lock:
+            saved = self._write_samples_sync(
                 image_bytes=image_bytes,
                 co_crop=co_crop,
                 cwu_crop=cwu_crop,
@@ -234,7 +233,7 @@ class SampleCollector:
 
         return False
 
-    async def capture_now(self, image_bytes: bytes, settings: AppSettings) -> dict[str, Any]:
+    def capture_now(self, image_bytes: bytes, settings: AppSettings) -> dict[str, Any]:
         """Force immediate capture and save of current frame and ROIs regardless of change diff.
 
         Returns:
@@ -260,9 +259,8 @@ class SampleCollector:
         co_crop, co_thumb = self._extract_crop_and_thumb(img, settings.roi_co, w_img, h_img)
         cwu_crop, cwu_thumb = self._extract_crop_and_thumb(img, settings.roi_cwu, w_img, h_img)
 
-        async with self._lock:
-            await asyncio.to_thread(
-                self._write_samples_sync,
+        with self._lock:
+            self._write_samples_sync(
                 image_bytes=image_bytes,
                 co_crop=co_crop,
                 cwu_crop=cwu_crop,

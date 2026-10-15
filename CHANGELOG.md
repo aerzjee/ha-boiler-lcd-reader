@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.2] - 2026-10-15
+
+### Fixed
+- **SampleCollector Threading & Coroutine Lifecycle:**
+  - Converted `SampleCollector.process_and_save_background_sample` and `capture_now` into synchronous `def` methods using `threading.Lock` to resolve `RuntimeWarning: coroutine was never awaited` when executed in worker threads.
+  - Ensured all blocking CPU/IO operations in `SampleCollector` and `TFLiteInferenceEngine` are invoked via `await asyncio.to_thread(...)` in `main.py` without blocking the FastAPI event loop.
+
 ## [0.1.1] - 2026-10-15
 
 ### Fixed
