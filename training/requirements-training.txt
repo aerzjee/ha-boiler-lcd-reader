@@ -28,9 +28,12 @@
 
 ultralytics>=8.3.0
 tensorflow>=2.16.0
+tf-keras
 ai-edge-litert
 onnx>=1.16.0
 onnx2tf>=1.22.0
+onnxslim>=0.1.31
+sng4onnx>=1.0.4
 openvino>=2024.4.0
 opencv-python
 numpy

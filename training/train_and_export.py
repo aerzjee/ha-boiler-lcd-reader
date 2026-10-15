@@ -6,9 +6,10 @@ Multi-platform support:
   - Standard x86_64 CPU (fallback)
 
 Trains a YOLO11 object detection model for 10 digit classes (0-9) on boiler LCD crops,
-exports the best weights to TensorFlow Lite (TFLite v3 FlatBuffer), optionally runs
-benchmarks on Intel AI Boost NPU and Intel Arc GPU via OpenVINO, verifies compatibility
-with the Home Assistant add-on backend, and places the active model in
+exports the best weights to TensorFlow Lite (TFLite v3 FlatBuffer) using a cross-platform
+pipeline (native LiteRT on Linux/macOS, PyTorch -> ONNX -> onnx2tf on Windows),
+optionally benchmarks on Intel AI Boost NPU and Intel Arc GPU via OpenVINO, verifies
+compatibility with the Home Assistant add-on backend, and places the active model in
 training/dist/active_model.tflite.
 """
 
@@ -16,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import platform
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -308,6 +311,209 @@ def run_openvino_benchmarks(model_xml: Path, imgsz: int = 320, iterations: int =
 
 
 # ---------------------------------------------------------------------------
+# Cross-Platform TFLite / LiteRT Export Pipeline
+# ---------------------------------------------------------------------------
+
+
+def export_to_tflite_cross_platform(
+    model: Any,
+    best_pt: Path,
+    imgsz: int,
+    output_dist_dir: Path,
+) -> Path:
+    """Export YOLO model to TensorFlow Lite (.tflite) cross-platform.
+
+    Resolves:
+    1. Deprecation of format="tflite" in favor of unified format="litert" in Ultralytics >= 8.4.83.
+    2. Removal of deprecated 'half' argument in favor of standard float32 precision.
+    3. Ultralytics restriction on Windows where model.export(format="litert") raises
+       AssertionError ("LiteRT export only supported on Linux x86 and macOS").
+    4. Bypasses Windows restriction via: PyTorch -> ONNX (opset=13, simplify=True) -> onnx2tf -> TFLite.
+
+    Args:
+        model: Loaded Ultralytics YOLO model instance.
+        best_pt: Path to trained PyTorch weights checkpoint.
+        imgsz: Model input image dimension.
+        output_dist_dir: Directory where active_model.tflite should be placed.
+
+    Returns:
+        Path to the validated active_model.tflite file.
+    """
+    if not output_dist_dir.is_absolute():
+        dist_dir = (Path(__file__).parent / output_dist_dir).resolve()
+    else:
+        dist_dir = output_dist_dir.resolve()
+
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    target_active_model = dist_dir / "active_model.tflite"
+
+    is_windows = platform.system() == "Windows"
+    exported_tflite_path: Path | None = None
+
+    # -------------------------------------------------------------------------
+    # Path A: Native Ultralytics LiteRT export for Linux & macOS
+    # -------------------------------------------------------------------------
+    if not is_windows:
+        logger.info(
+            "Non-Windows OS detected (%s). Attempting native Ultralytics format='litert' export...",
+            platform.system(),
+        )
+        try:
+            export_result = model.export(
+                format="litert",
+                imgsz=imgsz,
+            )
+            logger.info("Ultralytics LiteRT export return: %s", export_result)
+
+            candidates: list[Path] = []
+            if export_result and Path(str(export_result)).is_file():
+                candidates.append(Path(str(export_result)))
+            elif export_result and Path(str(export_result)).is_dir():
+                candidates.extend(Path(str(export_result)).glob("*.tflite"))
+            candidates.extend(best_pt.parent.glob("**/*.tflite"))
+
+            unique_candidates = sorted(set(candidates), key=lambda p: str(p))
+            for cand in unique_candidates:
+                if "float32" in cand.name.lower():
+                    exported_tflite_path = cand
+                    break
+            if exported_tflite_path is None and unique_candidates:
+                exported_tflite_path = unique_candidates[0]
+
+        except Exception as exc:
+            logger.warning(
+                "Native LiteRT export failed (%s). Falling back to ONNX -> onnx2tf pipeline.",
+                exc,
+            )
+            exported_tflite_path = None
+
+    # -------------------------------------------------------------------------
+    # Path B: Windows path or fallback (PyTorch -> ONNX -> onnx2tf -> TFLite)
+    # -------------------------------------------------------------------------
+    if exported_tflite_path is None:
+        if is_windows:
+            logger.info(
+                "Wykryto system Windows – uruchamianie wieloplatformowej konwersji "
+                "PyTorch -> ONNX -> TFLite (LiteRT)..."
+            )
+        else:
+            logger.info("Executing cross-platform conversion: PyTorch -> ONNX -> onnx2tf -> TFLite...")
+
+        # 1. Export PyTorch weights to ONNX
+        logger.info("Krok 1/3: Eksport PyTorch do formatu ONNX (opset=13, simplify=True, imgsz=%d)...", imgsz)
+        onnx_result = model.export(
+            format="onnx",
+            imgsz=imgsz,
+            opset=13,
+            simplify=True,
+        )
+        logger.info("Ultralytics ONNX export return: %s", onnx_result)
+
+        onnx_file: Path | None = None
+        if onnx_result and Path(str(onnx_result)).is_file():
+            onnx_file = Path(str(onnx_result))
+        else:
+            candidates = list(best_pt.parent.glob("**/*.onnx"))
+            if candidates:
+                onnx_file = candidates[0]
+
+        if onnx_file is None or not onnx_file.exists():
+            raise FileNotFoundError(f"Could not locate exported ONNX file in {best_pt.parent}")
+
+        logger.info("✓ Plik ONNX zlokalizowany w: %s (%.2f KB)", onnx_file, onnx_file.stat().st_size / 1024)
+
+        # 2. Convert ONNX to SavedModel / TFLite via onnx2tf
+        saved_model_dir = onnx_file.parent / f"{onnx_file.stem}_saved_model"
+        if saved_model_dir.exists():
+            shutil.rmtree(saved_model_dir, ignore_errors=True)
+        saved_model_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(
+            "Krok 2/3: Konwersja ONNX do TensorFlow SavedModel/TFLite za pomocą onnx2tf do %s...",
+            saved_model_dir,
+        )
+
+        conversion_done = False
+        try:
+            import onnx2tf
+
+            logger.info("Uruchamianie onnx2tf.convert()...")
+            onnx2tf.convert(
+                input_onnx_file_path=str(onnx_file),
+                output_folder_path=str(saved_model_dir),
+                non_verbose=True,
+            )
+            conversion_done = True
+        except ImportError:
+            logger.info("Pakiet onnx2tf nie jest zaimportowany bezpośrednio; wywołanie przez CLI subprocess...")
+            cmd = [
+                sys.executable,
+                "-m",
+                "onnx2tf",
+                "-i",
+                str(onnx_file),
+                "-o",
+                str(saved_model_dir),
+                "-nv",
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode == 0:
+                conversion_done = True
+            else:
+                logger.error("Błąd wywołania onnx2tf: %s\n%s", res.stdout, res.stderr)
+                raise RuntimeError(f"onnx2tf failed with exit code {res.returncode}") from None
+        except Exception as exc:
+            logger.error("Błąd podczas konwersji onnx2tf: %s", exc)
+            raise exc
+
+        if not conversion_done:
+            raise RuntimeError("Nie udało się ukończyć konwersji onnx2tf!")
+
+        # 3. Resolve or generate float32 .tflite file
+        logger.info("Krok 3/3: Wyszukiwanie wygenerowanego pliku .tflite...")
+        tflite_candidates = list(saved_model_dir.glob("**/*.tflite"))
+        float32_tflite: Path | None = None
+        for cand in tflite_candidates:
+            if "float32" in cand.name.lower():
+                float32_tflite = cand
+                break
+        if float32_tflite is None and tflite_candidates:
+            float32_tflite = tflite_candidates[0]
+
+        if float32_tflite is not None and float32_tflite.exists():
+            exported_tflite_path = float32_tflite
+            logger.info("✓ onnx2tf wygenerował bezpośrednio plik TFLite: %s", exported_tflite_path)
+        else:
+            # Fallback to TFLiteConverter from SavedModel
+            logger.info("Generowanie TFLite z SavedModel przez tf.lite.TFLiteConverter...")
+            try:
+                import tensorflow as tf
+
+                converter = tf.lite.TFLiteConverter.from_saved_model(str(saved_model_dir))
+                tflite_bytes = converter.convert()
+                converted_path = saved_model_dir / f"{onnx_file.stem}_converted.tflite"
+                converted_path.write_bytes(tflite_bytes)
+                exported_tflite_path = converted_path
+                logger.info(
+                    "✓ Pomyślnie wygenerowano TFLite z SavedModel: %s (%d bajtów)",
+                    exported_tflite_path,
+                    len(tflite_bytes),
+                )
+            except Exception as tf_exc:
+                logger.error("Błąd TFLiteConverter: %s", tf_exc)
+                raise tf_exc
+
+    if exported_tflite_path is None or not exported_tflite_path.exists():
+        raise FileNotFoundError(f"Nie udało się wygenerować pliku .tflite dla wag: {best_pt}")
+
+    # Copy to dist/active_model.tflite
+    shutil.copy2(exported_tflite_path, target_active_model)
+    logger.info("✓ Model aktywny został pomyślnie zapisany w: %s", target_active_model)
+
+    return target_active_model
+
+
+# ---------------------------------------------------------------------------
 # Model Verification Routine (TFLite for Home Assistant)
 # ---------------------------------------------------------------------------
 
@@ -536,12 +742,11 @@ def run_training_and_export(
     # Optional OpenVINO Export & Intel AI Boost NPU Benchmark
     # -------------------------------------------------------------------------
     if should_run_npu_bench or export_openvino:
-        logger.info("Exporting %s to OpenVINO format (half=True)...", best_pt.name)
+        logger.info("Exporting %s to OpenVINO format...", best_pt.name)
         try:
             ov_result = best_model.export(
                 format="openvino",
                 imgsz=imgsz,
-                half=True,
             )
             logger.info("OpenVINO export artifact: %s", ov_result)
 
@@ -564,56 +769,16 @@ def run_training_and_export(
             logger.warning("OpenVINO export/benchmark failed (non-critical): %s", ov_exc)
 
     # -------------------------------------------------------------------------
-    # Primary Export: TensorFlow Lite (TFLite for Home Assistant)
+    # Primary Export: TensorFlow Lite (Cross-Platform LiteRT / ONNX pipeline)
     # -------------------------------------------------------------------------
     logger.info("Exporting %s to TensorFlow Lite format (imgsz=%d)...", best_pt.name, imgsz)
 
-    export_result = best_model.export(
-        format="tflite",
+    target_active_model = export_to_tflite_cross_platform(
+        model=best_model,
+        best_pt=best_pt,
         imgsz=imgsz,
-        half=False,  # Float32 model for best numerical stability on Home Assistant
+        output_dist_dir=output_dist_dir,
     )
-    logger.info("Ultralytics TFLite export return path: %s", export_result)
-
-    # Locate generated .tflite file
-    tflite_candidates: list[Path] = []
-    if export_result and Path(str(export_result)).is_file():
-        tflite_candidates.append(Path(str(export_result)))
-    elif export_result and Path(str(export_result)).is_dir():
-        tflite_candidates.extend(Path(str(export_result)).glob("*.tflite"))
-
-    weights_dir = best_pt.parent
-    tflite_candidates.extend(weights_dir.glob("**/*.tflite"))
-
-    unique_candidates = sorted(set(tflite_candidates), key=lambda p: str(p))
-
-    # Prioritize float32 model
-    chosen_tflite: Path | None = None
-    for cand in unique_candidates:
-        if "float32" in cand.name.lower():
-            chosen_tflite = cand
-            break
-    if chosen_tflite is None and unique_candidates:
-        chosen_tflite = unique_candidates[0]
-
-    if chosen_tflite is None or not chosen_tflite.exists():
-        raise FileNotFoundError(f"Could not locate exported .tflite file in {weights_dir}")
-
-    logger.info("Selected exported TFLite file: %s", chosen_tflite)
-
-    # -------------------------------------------------------------------------
-    # Copy to target distribution directory (active_model.tflite)
-    # -------------------------------------------------------------------------
-    if not output_dist_dir.is_absolute():
-        dist_dir = (Path(__file__).parent / output_dist_dir).resolve()
-    else:
-        dist_dir = output_dist_dir.resolve()
-
-    dist_dir.mkdir(parents=True, exist_ok=True)
-    target_active_model = dist_dir / "active_model.tflite"
-
-    shutil.copy2(chosen_tflite, target_active_model)
-    logger.info("✓ Successfully placed active model at: %s", target_active_model)
 
     # -------------------------------------------------------------------------
     # Self-Verification Sanity Check
@@ -712,7 +877,7 @@ def main() -> None:
         "--export-openvino",
         action="store_true",
         default=False,
-        help="Export trained weights to OpenVINO FP16 format in addition to TFLite.",
+        help="Export trained weights to OpenVINO format in addition to TFLite.",
     )
 
     args = parser.parse_args()
