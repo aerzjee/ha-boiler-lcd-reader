@@ -1,13 +1,16 @@
-#!/usr/bin/with-contenv bashio
+#!/usr/bin/env bash
+set -e
+
 # ==============================================================================
 # Boiler LCD Reader – Entrypoint
 # ==============================================================================
 
-# Read log level from add-on options
-LOG_LEVEL=$(bashio::config 'log_level')
+# Read log level from /data/options.json (fallback to info)
+LOG_LEVEL=$(python3 -c "import json; print(json.load(open('/data/options.json')).get('log_level', 'info'))" 2>/dev/null || echo "info")
 export LOG_LEVEL
+export PYTHONPATH="/"
 
-bashio::log.info "Starting Boiler LCD Reader add-on (log_level=${LOG_LEVEL})..."
+echo "Starting Boiler LCD Reader add-on (log_level=${LOG_LEVEL})..."
 
 # Ensure persistent data directories exist
 mkdir -p /data/models

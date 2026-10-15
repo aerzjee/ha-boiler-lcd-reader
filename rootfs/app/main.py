@@ -214,7 +214,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Boiler LCD Reader",
-    version="0.1.0",
+    version="0.1.1",
     docs_url=None,
     redoc_url=None,
     lifespan=lifespan,
@@ -296,7 +296,7 @@ async def serve_index():
 @app.get("/api/health")
 async def health_check():
     """Return service health status."""
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.1.1"}
 
 
 @app.get("/api/status")

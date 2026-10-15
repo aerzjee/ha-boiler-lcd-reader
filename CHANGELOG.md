@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2026-10-15
+
+### Fixed
+- **Container Entrypoint & Startup Permissions:**
+  - Explicitly cleared inherited s6-overlay base image entrypoint in `Dockerfile` (`ENTRYPOINT []`) to resolve `/bin/sh: 0: cannot open /init: Permission denied` when running with `init: false`.
+  - Updated `run.sh` entrypoint to use standard `#!/usr/bin/env bash` with `set -e`, removing dependencies on `with-contenv` and `bashio`.
+  - Added options parsing in `run.sh` reading `/data/options.json` directly via Python with fallback to `info`.
+  - Disabled custom AppArmor profile (`apparmor: false` in `config.yaml` and removed `apparmor.txt`) to allow standard Supervisor AppArmor confinement without blocking `/bin/bash` or Python runtime libraries.
+
 ## [0.1.0] - 2026-10-15
 
 ### Added
