@@ -28,6 +28,7 @@ samples/
 # Training artifacts (heavy datasets and weight runs; scripts and YAMLs are tracked)
 training/runs/
 training/datasets/
+training/dist/
 training/*.pt
 training/*.tflite
 training/*.onnx

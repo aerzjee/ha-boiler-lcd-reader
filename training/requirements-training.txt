@@ -1,0 +1,23 @@
+# ==============================================================================
+# Boiler LCD Reader – Local YOLO11 Training & TFLite Export Dependencies
+# Target GPU: NVIDIA GeForce RTX 5080 (Blackwell architecture, 16GB VRAM)
+# Target CPU: AMD Ryzen 9 9950X3D (16 Cores / 32 Threads)
+# ==============================================================================
+#
+# IMPORTANT: Install PyTorch with CUDA support first before installing this file!
+# For RTX 5080 (CUDA 12.4+ / 12.6+ / 12.8+):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   (or use cu126 / cu128 depending on the latest PyTorch Blackwell wheel support)
+#
+# Then install training dependencies:
+#   pip install -r requirements-training.txt
+# ==============================================================================
+
+ultralytics>=8.3.0
+tensorflow>=2.16.0
+ai-edge-litert
+onnx>=1.16.0
+onnx2tf>=1.22.0
+opencv-python
+numpy
+pyyaml
