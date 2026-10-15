@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Boiler LCD Reader</title>
+  <link rel="stylesheet" href="static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='20' font-size='20'>🌡️</text></svg>">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="header-icon">🌡️</div>
+        <div>
+          <h1>Boiler LCD Reader</h1>
+          <p class="subtitle">Odczyt temperatur CO & CWU przez TFLite dla Home Assistanta</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="status-pill" id="model-status-pill">
+          <span class="status-dot"></span>
+          <span id="model-status-text">Sprawdzanie modelu...</span>
+        </div>
+        <div class="temp-badges">
+          <div class="temp-badge co">
+            <span class="label">CO:</span>
+            <span class="value" id="val-co">-- °C</span>
+          </div>
+          <div class="temp-badge cwu">
+            <span class="label">CWU:</span>
+            <span class="value" id="val-cwu">-- °C</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="dashboard-grid">
+      <!-- Card 1: Camera Preview & ROI Canvas -->
+      <section class="card preview-card">
+        <div class="card-header">
+          <h2>📷 Podgląd Kamery i Rysowanie Obszarów ROI</h2>
+          <span class="badge" id="preview-status">Ładowanie klatki...</span>
+        </div>
+
+        <div class="canvas-toolbar">
+          <div class="toolbar-group">
+            <button type="button" class="btn btn-secondary" id="btn-refresh-preview">
+              🔄 Odśwież kadr
+            </button>
+          </div>
+
+          <div class="toolbar-group drawing-mode-selector">
+            <span class="mode-label">Tryb rysowania:</span>
+            <label class="radio-label co">
+              <input type="radio" name="roi-mode" value="co" checked>
+              <span class="radio-custom"></span>
+              🔴 ROI CO (Centralne Ogrzewanie)
+            </label>
+            <label class="radio-label cwu">
+              <input type="radio" name="roi-mode" value="cwu">
+              <span class="radio-custom"></span>
+              🟢 ROI CWU (Ciepła Woda)
+            </label>
+          </div>
+
+          <div class="toolbar-group">
+            <button type="button" class="btn btn-outline-danger" id="btn-clear-rois">
+              Wyczyść ramki
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-save-rois">
+              💾 Zapisz ramki ROI
+            </button>
+          </div>
+        </div>
+
+        <div class="canvas-wrapper" id="canvas-wrapper">
+          <canvas id="camera-canvas"></canvas>
+          <div class="canvas-placeholder" id="canvas-placeholder">
+            <div class="spinner"></div>
+            <p>Pobieranie klatki z kamery...</p>
+          </div>
+        </div>
+
+        <div class="roi-coords-bar">
+          <div class="coords-box co">
+            <span class="coords-title">🔴 Ramka CO:</span>
+            <span class="coords-values" id="coords-co">Brak zaznaczenia</span>
+          </div>
+          <div class="coords-box cwu">
+            <span class="coords-title">🟢 Ramka CWU:</span>
+            <span class="coords-values" id="coords-cwu">Brak zaznaczenia</span>
+          </div>
+        </div>
+        <p class="help-text">
+          💡 Zaznacz tryb rysowania (CO lub CWU), a następnie przeciągnij kursorem lub palcem po ekranie, aby narysować ramkę wokół cyfr temperatury. Po zaznaczeniu kliknij „Zapisz ramki ROI”.
+        </p>
+      </section>
+
+      <!-- Card 2: Configuration & Entities -->
+      <section class="card config-card">
+        <div class="card-header">
+          <h2>⚙️ Konfiguracja Odczytu i Encji</h2>
+        </div>
+
+        <form id="settings-form" class="settings-form">
+          <div class="form-group">
+            <label for="camera-select">Kamera Home Assistant:</label>
+            <div class="input-with-button">
+              <select id="camera-select" name="camera_entity" required>
+                <option value="">Wybierz kamerę...</option>
+              </select>
+              <button type="button" class="btn btn-secondary btn-icon" id="btn-refresh-cameras" title="Odśwież listę kamer">
+                🔄
+              </button>
+            </div>
+            <small>Wybierz encję kamery skierowanej na wyświetlacz kotła.</small>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="scan-interval">Interwał odczytu (s):</label>
+              <input type="number" id="scan-interval" name="scan_interval_seconds" min="5" max="3600" value="30" required>
+              <small>Zalecane: 15–60 s</small>
+            </div>
+            <div class="form-group col">
+              <label for="confidence-threshold">Próg pewności detekcji:</label>
+              <input type="number" id="confidence-threshold" name="confidence_threshold" min="0.10" max="0.99" step="0.05" value="0.50" required>
+              <small>0.10 – 0.99</small>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="min-temp">Min. temperatura (°C):</label>
+              <input type="number" id="min-temp" name="min_temp" min="0" max="99" step="1" value="5" required>
+              <small>Całkowita (np. 5)</small>
+            </div>
+            <div class="form-group col">
+              <label for="max-temp">Maks. temperatura (°C):</label>
+              <input type="number" id="max-temp" name="max_temp" min="1" max="99" step="1" value="95" required>
+              <small>Całkowita (np. 95)</small>
+            </div>
+            <div class="form-group col">
+              <label for="max-delta">Maks. skok (°C):</label>
+              <input type="number" id="max-delta" name="max_delta" min="1" max="50" step="1" value="15" required>
+              <small>Próg potwierdzenia</small>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col">
+              <label for="sensor-co">Encja sensora CO:</label>
+              <input type="text" id="sensor-co" name="sensor_co_entity" pattern="^sensor\.[a-z0-9_]+$" value="sensor.boiler_co_temperature" required>
+            </div>
+            <div class="form-group col">
+              <label for="sensor-cwu">Encja sensora CWU:</label>
+              <input type="text" id="sensor-cwu" name="sensor_cwu_entity" pattern="^sensor\.[a-z0-9_]+$" value="sensor.boiler_cwu_temperature" required>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary btn-block" id="btn-save-settings">
+              💾 Zapisz konfigurację
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Card 3: Training Dataset & Collector -->
+      <section class="card collector-card">
+        <div class="card-header">
+          <h2>📦 Zbiór Treningowy (Collector) i Pobieranie Klatek</h2>
+          <span class="badge" id="collector-status-badge">Collector wyłączony</span>
+        </div>
+
+        <div class="collector-toggle-box">
+          <label class="switch-container">
+            <input type="checkbox" id="collector-enabled-switch">
+            <span class="switch-slider"></span>
+            <span class="switch-label">
+              <strong>Automatycznie zbieraj próbki w tle (Collector Mode)</strong>
+              <small>Automatycznie zapisuje klatki i wycinki po wykryciu zmiany temperatury (max 300 zdjęć).</small>
+            </span>
+          </label>
+        </div>
+
+        <div class="quota-progress-section">
+          <div class="quota-header">
+            <span>Zapełnienie bufora próbek:</span>
+            <strong id="quota-text">0 / 300 plików (0.0 MB)</strong>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="quota-progress" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <div class="collector-actions-grid">
+          <div class="action-column">
+            <h3>Pobieranie pojedynczych klatek</h3>
+            <div class="btn-group-vertical">
+              <button type="button" class="btn btn-outline" id="btn-download-full">
+                📥 Pobierz klatkę pełną (.jpg)
+              </button>
+              <button type="button" class="btn btn-outline" id="btn-download-co">
+                🔴 Pobierz wycinek CO (.jpg)
+              </button>
+              <button type="button" class="btn btn-outline" id="btn-download-cwu">
+                🟢 Pobierz wycinek CWU (.jpg)
+              </button>
+            </div>
+          </div>
+
+          <div class="action-column">
+            <h3>Zarządzanie zbiorem</h3>
+            <div class="btn-group-vertical">
+              <button type="button" class="btn btn-secondary" id="btn-capture-now">
+                📸 Złap próbkę teraz
+              </button>
+              <button type="button" class="btn btn-success" id="btn-export-zip">
+                📦 Pobierz paczkę próbek (.zip)
+              </button>
+              <button type="button" class="btn btn-danger" id="btn-clear-samples">
+                🗑️ Wyczyść zebrane próbki
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Card 4: TFLite Model Management -->
+      <section class="card model-card">
+        <div class="card-header">
+          <h2>🧠 Model TensorFlow Lite (.tflite)</h2>
+          <span class="badge" id="model-file-badge">Brak pliku</span>
+        </div>
+
+        <div class="model-info-box" id="model-info-box">
+          <div class="info-row">
+            <span class="label">Nazwa pliku:</span>
+            <strong class="value" id="model-filename">active_model.tflite</strong>
+          </div>
+          <div class="info-row">
+            <span class="label">Rozmiar pliku:</span>
+            <span class="value" id="model-size">-- KB</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Ostatnia modyfikacja:</span>
+            <span class="value" id="model-mtime">--</span>
+          </div>
+        </div>
+
+        <div class="model-upload-box">
+          <label for="model-file-input" class="upload-label">
+            Wybierz plik modelu <code>.tflite</code>:
+          </label>
+          <div class="upload-controls">
+            <input type="file" id="model-file-input" accept=".tflite" class="file-input">
+            <button type="button" class="btn btn-primary" id="btn-upload-model">
+              ⬆️ Wgraj model .tflite
+            </button>
+          </div>
+          <p class="help-text">
+            ℹ️ Model musi być zoptymalizowanym grafem TensorFlow Lite v3 (magiczny nagłówek <code>TFL3</code>, 10 klas cyfr 0–9, limit do 25 MB). Po wgraniu model jest automatycznie wczytywany do pamięci.
+          </p>
+      </section>
+
+      <!-- Card 5: Live Diagnostics & Inference Preview -->
+      <section class="card diagnostics-card">
+        <div class="card-header">
+          <h2>🔬 Diagnostyka i Podgląd Odczytu na Żywo</h2>
+          <span class="badge" id="diag-worker-badge">Worker nieaktywny</span>
+        </div>
+
+        <div class="diag-toolbar">
+          <button type="button" class="btn btn-primary" id="btn-test-inference">
+            🧪 Wymuś testowy odczyt teraz
+          </button>
+          <p class="help-text" style="margin-left: 12px; margin-bottom: 0;">
+            Uruchamia jednokrotną inferencję na obu kanałach (CO i CWU) oraz publikuje potwierdzone odczyty do Home Assistanta.
+          </p>
+        </div>
+
+        <div class="diag-panels-grid">
+          <!-- CO Diagnostic Panel -->
+          <div class="diag-panel co-panel">
+            <h3 class="diag-panel-title co-title">🔴 Kanał CO (Centralne Ogrzewanie)</h3>
+            <div class="diag-image-box">
+              <img id="diag-img-co" class="diag-annotated-img" alt="Wycinek ROI CO z detekcją" style="display: none;">
+              <div class="diag-img-placeholder" id="diag-img-co-placeholder">
+                <span>Brak obrazu diagnostycznego</span>
+              </div>
+            </div>
+            <div class="diag-details">
+              <div class="diag-temp-value">
+                <span class="diag-label">Wartość zatwierdzona:</span>
+                <strong class="diag-value" id="diag-val-co">-- °C</strong>
+              </div>
+              <div class="diag-meta">
+                <div class="diag-row">
+                  <span class="diag-label">Wartość surowa (raw):</span>
+                  <strong id="diag-raw-co">--</strong>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">Średnia pewność:</span>
+                  <span id="diag-conf-co">--%</span>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">Status walidacji:</span>
+                  <span class="diag-status-badge" id="diag-status-co">Brak danych</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- CWU Diagnostic Panel -->
+          <div class="diag-panel cwu-panel">
+            <h3 class="diag-panel-title cwu-title">🟢 Kanał CWU (Ciepła Woda Użytkowa)</h3>
+            <div class="diag-image-box">
+              <img id="diag-img-cwu" class="diag-annotated-img" alt="Wycinek ROI CWU z detekcją" style="display: none;">
+              <div class="diag-img-placeholder" id="diag-img-cwu-placeholder">
+                <span>Brak obrazu diagnostycznego</span>
+              </div>
+            </div>
+            <div class="diag-details">
+              <div class="diag-temp-value">
+                <span class="diag-label">Wartość zatwierdzona:</span>
+                <strong class="diag-value" id="diag-val-cwu">-- °C</strong>
+              </div>
+              <div class="diag-meta">
+                <div class="diag-row">
+                  <span class="diag-label">Wartość surowa (raw):</span>
+                  <strong id="diag-raw-cwu">--</strong>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">Średnia pewność:</span>
+                  <span id="diag-conf-cwu">--%</span>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">Status walidacji:</span>
+                  <span class="diag-status-badge" id="diag-status-cwu">Brak danych</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="diag-timestamp-bar">
+          <span class="diag-label">Ostatni cykl inferencji:</span>
+          <span id="diag-last-timestamp">--</span>
+          <span id="diag-last-error" style="color: var(--danger); margin-left: 16px;"></span>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>Boiler LCD Reader Add-on &bull; Single-addon HA OS &bull; Wyłącznie liczby całkowite °C</p>
+    </footer>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Scripts -->
+  <script src="static/app.js"></script>
+</body>
+</html>

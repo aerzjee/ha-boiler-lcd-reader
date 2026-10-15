@@ -1,0 +1,53 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Persistent runtime data
+/data/
+data/
+samples/
+
+# Model binaries & archives
+*.tflite
+*.pt
+*.onnx
+*.zip
+
+# Training artifacts (heavy datasets and weight runs; scripts and YAMLs are tracked)
+training/runs/
+training/datasets/
+training/*.pt
+training/*.tflite
+training/*.onnx
+training/**/*.jpg
+training/**/*.jpeg
+training/**/*.png
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS & Environment
+.DS_Store
+Thumbs.db
+.env
+
+# Temporary
+tmp/
+*.tmp
+*.log

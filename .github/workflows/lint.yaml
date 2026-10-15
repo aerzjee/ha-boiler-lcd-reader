@@ -1,0 +1,32 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Ruff & Bandit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install linting tools
+        run: pip install ruff bandit
+
+      - name: Run Ruff linter
+        run: ruff check rootfs/
+
+      - name: Run Ruff formatter check
+        run: ruff format --check rootfs/
+
+      - name: Run Bandit security analysis
+        run: bandit -r rootfs/ -c pyproject.toml

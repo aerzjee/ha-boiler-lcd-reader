@@ -1,0 +1,39 @@
+# Project: Home Assistant Add-on - Boiler LCD Digit Reader (TFLite)
+
+## 1. Core Architecture & Environment Constraints
+- Target architecture: `amd64` ONLY (running on Home Assistant OS VM on Synology).
+- Base image: `ghcr.io/home-assistant/amd64-base-debian:bookworm`.
+- Repository type: Single-addon repository (both `repository.yaml` and `config.yaml` must reside in the root directory).
+- Persistent Storage: ALL persistent files (`/data/settings.json`, `/data/models/active_model.tflite`, `/data/samples/`) MUST be stored strictly inside `/data/`. Never write state to `/app` or `/config`.
+
+## 2. Domain Logic & ML Specifications (Integer Temperatures Only)
+- Monitored values: Two separate integer temperatures from a blue LCD screen with white digits:
+  1. **CO** (Central Heating -> `sensor.boiler_co_temperature`)
+  2. **CWU** (Domestic Hot Water -> `sensor.boiler_cwu_temperature`)
+- Step & Format: Temperatures are displayed in 1°C increments with NO decimal places.
+- Model Classes: Strictly 10 classes (`0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`). Do NOT include decimal points or minus signs.
+- Post-processing:
+  - Sort detected bounding boxes after Non-Maximum Suppression (NMS) from left to right by `x_center`.
+  - Concatenate class labels and parse strictly as `int`.
+  - Sanity Check: Reject readings outside `[min_temp, max_temp]` (default `5` to `99` °C) or sudden jumps exceeding `max_delta` (default `15` °C) unless confirmed by 3 consecutive readings.
+
+## 3. Home Assistant Integration & Ingress Security
+- Zero-Trust Auth: Never ask the user for a Long-Lived Access Token. Always authenticate against `http://supervisor/core/api/` using the injected `SUPERVISOR_TOKEN` environment variable (`Authorization: Bearer <SUPERVISOR_TOKEN>`).
+- Camera Input: Fetch snapshots via `GET http://supervisor/core/api/camera_proxy/{camera_entity}`.
+- Sensor Output: Publish integer states via `POST http://supervisor/core/api/states/{entity_id}` with attributes:
+  - `unit_of_measurement`: `"°C"`
+  - `device_class`: `"temperature"`
+  - `state_class`: `"measurement"`
+  - `friendly_name`: `"Piec CO Temperatura"` / `"Piec CWU Temperatura"`
+- Ingress UI Rules:
+  - FastAPI listens on port `8099` (`ingress: true`, `ingress_port: 8099`).
+  - Verify that incoming requests originate from the HA Ingress proxy (`172.30.32.2`) when running in production mode.
+  - CRITICAL FRONTEND RULE: All HTML links, static assets, and `fetch()` calls MUST use relative paths without a leading slash (e.g., `fetch("api/settings")`, `src="static/app.js"`), because Home Assistant serves the UI under `/api/hassio_ingress/<token>/`.
+
+## 4. Coding, Security & CI/CD Standards
+- Python 3.11+, FastAPI, Uvicorn, Pydantic v2, `httpx`, `opencv-python-headless`, `ai-edge-litert` (or `tflite-runtime`), `numpy`.
+- Keep the TFLite interpreter loaded in memory as a singleton; reload only when a new model is uploaded.
+- Collector Safety: Cap `/data/samples/` at a maximum of 300 images. Sanitize all file paths and restrict `.tflite` model uploads to a maximum of 25 MB with FlatBuffer magic-byte validation (`TFL3`).
+- GitHub Actions CI/CD:
+  - `lint.yaml`: Runs on every push/PR to `main` (Ruff, Bandit, Addon Linter).
+  - `build.yaml`: Runs ONLY on version tag push (`v*.*.*`) and manual `workflow_dispatch`. Must synchronize or validate the tag against `version` in `config.yaml` and publish the `amd64` container image to `ghcr.io`.

@@ -1,0 +1,35 @@
+# Git
+.git/
+.gitignore
+
+# GitHub
+.github/
+
+# Training artifacts and heavy weights
+training/
+*.pt
+*.onnx
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Documentation and metadata
+README.md
+LICENSE
+CHANGELOG.md
+.antigravityrules
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary
+tmp/
+*.tmp
+*.log

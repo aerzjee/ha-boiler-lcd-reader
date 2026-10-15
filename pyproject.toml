@@ -1,0 +1,15 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["rootfs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM", "TCH"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.bandit]
+exclude_dirs = ["tests", "training"]
+skips = ["B101"]
