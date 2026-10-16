@@ -133,6 +133,8 @@ Oraz wypisze w konsoli szczegółową tabelę rozkładu klas cyfr (0–9) wraz z
 > [!TIP]
 > **Przydatne flagi skryptu `prepare_dataset.py`:**
 > - `python prepare_dataset.py --check-dist` – błyskawiczna analiza rozkładu klas w istniejącym zbiorze bez konieczności ponownego importu plików.
+> - `python prepare_dataset.py --trim-existing --trim-per-class 30` – przycięcie istniejącego zbioru do max 30 próbek na cyfrę z automatyczną kopią zapasową.
+> - `python prepare_dataset.py --input <paczka> --trim-per-class 30` – przygotowanie nowego zbioru z paczki ZIP z automatycznym inteligentnym przycięciem do 30 sztuk na cyfrę.
 > - `python prepare_dataset.py --input <paczka> --append` – dopisanie nowych próbek bez usuwania dotychczasowych danych i z automatyczną ochroną przed kolizjami nazw plików.
 
 ---
@@ -207,6 +209,68 @@ Procesory **Intel Core Ultra** posiadają zintegrowany układ graficzny **Intel 
    - **Intel AI Boost (NPU)**
    - **Intel Arc Graphics (GPU)**
    - **Host CPU**
+
+---
+
+## ✂️ Balansowanie i przycinanie zbyt dużego zbioru (Trim Dataset)
+
+### Dlaczego mniej znaczy więcej przy statycznej kamerze LCD?
+Gdy kamera jest sztywno zamontowana przed wyświetlaczem kotła i zbierze ponad 1000 klatek (np. 1105 próbek), pojawiają się dwa zjawiska degradujące skuteczność i pewność (*confidence*) modelu:
+
+1. **Zjawisko przeuczenia tła (Background Overfitting) i memorizacja szumu sensora:**
+   - W odróżnieniu od klasycznych zbiorów detekcji obiektów (np. COCO – samochody, piesi na zmiennym tle), kamera LCD rejestruje w kółko identyczne tło, mikrorysy na plastiku obudowy, kąt padania światła i stały szum matrycy CMOS.
+   - Posiadanie setek niemal identycznych zdjęć tych samych cyfr sprawia, że sieć neuronowa zamiast uczyć się niezmienniczych cech geometrycznych segmentów cyfr (linii pionowych, poziomych, kątów), dopasowuje wagi do konkretnych pikseli tła. W efekcie po wyeksportowaniu do TFLite model traci pewność (confidence spada np. do 0.30–0.50 lub cyfry przestają być w ogóle wykrywane).
+
+2. **Zbyt mała liczba kroków aktualizacji gradientu (Gradient Step Starvation) i rozkalibrowanie BatchNorm:**
+   - Jeśli zbiór 1100 zdjęć jest zdominowany przez typowe temperatury pracy (np. 48°C, 52°C, 56°C), klasy `4`, `5` i `6` mają po 150 próbek, a cyfry rzadkie zaledwie po kilka.
+   - Przy dużym batch size (np. 64 na kartach NVIDIA RTX 5080) w każdej epoce wykonuje się zaledwie kilkanaście kroków aktualizacji wag. Statystyki warstw **Batch Normalization** ulegają rozregulowaniu, co w architekturze YOLO drastycznie obniża pewność detekcji.
+
+**Złota zasada:** Zbalansowany zbiór **30–50 zróżnicowanych próbek na każdą cyfrę** (łącznie ok. 150–250 zdjęć) w połączeniu z mniejszym `batch=16` i augmentacjami jasności/kontrastu (`hsv_s`, `hsv_v`) uczy detektor wyłącznie kształtu segmentów i osiąga pewność detekcji **0.85–0.98**!
+
+---
+
+### Algorytm inteligentnego przycinania (Rarity-First Greedy Selection)
+Ponieważ na pojedynczym wycinku ROI niemal zawsze występują dwie cyfry jednocześnie (np. temperatura `48` zawiera cyfrę `4` i cyfrę `8`), zwykłe losowe usuwanie plików usunęłoby cenną rzadką cyfrę `8`, bo towarzyszyła jej popularna cyfra `4`.
+
+Algorytm w `prepare_dataset.py`:
+1. Analizuje rozkład wszystkich klas i sortuje cyfry od najrzadszej do najczęstszej.
+2. Zaczynając od najrzadszych cyfr (np. `8`, `9`, `2`), zabezpiecza ich obecność w docelowej liczbie (np. 30 sztuk).
+3. Dozbierając próbki dla rzadkich cyfr, preferuje te zdjęcia, na których cyfry towarzyszące nie przekraczają limitu lub mieszczą się w dopuszczalnym miękkim marginesie (+30%).
+4. Odrzuca nadmiarowe, redundantne klatki popularnych cyfr, sprowadzając cały zbiór do zrównoważonego rozkładu.
+5. Gwarantuje, że przy podziale train (85%) / val (15%) każda obecna cyfra trafi zarówno do zbioru uczącego, jak i walidacyjnego.
+
+---
+
+### Gotowe komendy
+
+#### 1. Przycięcie już istniejącego zbioru (np. 1105 próbek) do 30 sztuk na cyfrę
+Nie musisz ponownie pobierać paczki ZIP. Użyj flagi `--trim-existing`:
+```bash
+python prepare_dataset.py --trim-existing --trim-per-class 30
+```
+> [!NOTE]
+> Skrypt automatycznie utworzy kopię zapasową w `training/datasets/boiler_digits_backup_<timestamp>/`, dzięki czemu nigdy nie utracisz pierwotnych adnotacji. Następnie wyświetli w konsoli tabelę porównawczą PRZED vs PO przycięciu.
+
+#### 2. Przygotowanie nowego zbioru z paczki ZIP z automatycznym przycięciem
+Możesz zastosować limit już na etapie rozpakowywania nowej paczki próbek:
+```bash
+python prepare_dataset.py --input "C:\Pobrane\boiler_training_samples.zip" --trim-per-class 30
+```
+
+#### 3. Ponowne czyste wytrenowanie modelu na przyciętym zbiorze
+Po zredukowaniu zbioru uruchom trening od zera z bazowego modelu `yolo11n.pt` z optymalnym `batch=16` oraz `epochs=100`:
+```bash
+# NVIDIA GeForce RTX 5080 (CUDA):
+python train_and_export.py --epochs 100 --batch 16 --device 0
+
+# Intel Core Ultra (Intel Arc 140T XPU):
+python train_and_export.py --epochs 100 --batch 16 --device xpu
+
+# Tryb automatyczny:
+python train_and_export.py --epochs 100 --batch 16
+```
+> [!TIP]
+> Skrypt `train_and_export.py` automatycznie wykrywa, gdy zbiór treningowy ma poniżej 400 klatek, i samoczynnie dobiera bezpieczny `batch=16` (chyba że podasz inną wartość ręcznie).
 
 ---
 

@@ -665,6 +665,38 @@ def find_latest_checkpoint(search_roots: list[Path] | None = None) -> Path | Non
     return sorted_candidates[0]
 
 
+def count_training_samples(data_yaml_path: Path) -> int:
+    """Count image files in the training split specified by dataset.yaml.
+
+    Args:
+        data_yaml_path: Path to dataset.yaml configuration.
+
+    Returns:
+        Number of valid image files in images/train, or 0 if unresolvable.
+    """
+    image_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    try:
+        lines = data_yaml_path.read_text(encoding="utf-8").splitlines()
+        base_path_str = ""
+        train_sub_str = "images/train"
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("path:"):
+                base_path_str = stripped.split(":", 1)[1].strip().strip("\"'")
+            elif stripped.startswith("train:"):
+                train_sub_str = stripped.split(":", 1)[1].strip().strip("\"'")
+
+        dataset_root = (data_yaml_path.parent / base_path_str).resolve() if base_path_str else data_yaml_path.parent
+        train_dir = (dataset_root / train_sub_str).resolve()
+        if train_dir.exists() and train_dir.is_dir():
+            return sum(1 for p in train_dir.iterdir() if p.is_file() and p.suffix.lower() in image_exts)
+    except Exception as exc:
+        logger.debug("Could not count training images from %s: %s", data_yaml_path, exc)
+
+    return 0
+
+
 def run_training_and_export(
     model_name: str = "yolo11n.pt",
     data_config: Path = Path("dataset.yaml"),
@@ -713,6 +745,25 @@ def run_training_and_export(
 
     if not data_config_path.exists():
         raise FileNotFoundError(f"Dataset configuration file not found at: {data_config_path}")
+
+    # Check dataset size for automatic small-dataset batch size tuning
+    train_samples_count = count_training_samples(data_config_path)
+    if 0 < train_samples_count < 400 and batch == 0 and final_batch > 16:
+        logger.info("=" * 60)
+        logger.info("💡 WYKRYTO MAŁY ZBIÓR TRENINGOWY (%d obrazów w images/train < 400).", train_samples_count)
+        logger.info(
+            "Dla mniejszych zbiorów duży batch size (np. %d) drastycznie redukuje liczbę kroków gradientu",
+            final_batch,
+        )
+        logger.info(
+            "oraz zniekształca statystyki kalibracji BatchNorm, co drastycznie obniża pewność (confidence) detekcji."
+        )
+        logger.info(
+            "Automatycznie optymalizuję batch z %d do 16 dla stabilnej zbieżności i wysokiej pewności.",
+            final_batch,
+        )
+        logger.info("=" * 60)
+        final_batch = 16
 
     logger.info("=" * 60)
     logger.info("Starting Boiler LCD YOLO11 Training Pipeline")
